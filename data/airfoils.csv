@@ -1,0 +1,7 @@
+Name,Category,Best_For,Cl,Cd,LD,StallSpeed,Description
+NACA 4412,Drone,Surveillance,1.18,0.028,42,42,Excellent lift and stability at low speeds.
+NACA 2412,General,Training,1.02,0.030,34,48,Versatile airfoil used on many light aircraft.
+Clark Y,Cargo,Delivery,1.10,0.032,35,50,Strong lifting airfoil ideal for carrying loads.
+MH32,Glider,Long Endurance,0.95,0.020,48,38,High efficiency airfoil for gliders.
+NACA 64A204,Fighter,Racing,0.88,0.018,50,65,Designed for high-speed flight with low drag.
+S1223,Drone,Heavy Lift,1.45,0.040,36,35,Very high lift airfoil for slow aircraft.
