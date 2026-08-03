@@ -261,6 +261,11 @@ elif page == "🛩 Aircraft Designer":
             time.sleep(2)
 
         airfoil = recommend_airfoil(aircraft, mission)
+        # Save the generated design so other pages can use it
+        st.session_state["airfoil"] = airfoil
+        st.session_state["speed"] = speed
+        st.session_state["aircraft"] = aircraft
+        st.session_state["mission"] = mission
 
         st.success("Design Generated Successfully!")
 
@@ -312,29 +317,19 @@ elif page == "📊 Analysis":
 
     st.title("📊 Aerodynamic Analysis")
 
-    st.write("### Lift Force")
+    if "airfoil" not in st.session_state:
+        st.warning("Please generate a design from the Aircraft Designer page first.")
+        st.stop()
+
+    airfoil = st.session_state["airfoil"]
+    speed = st.session_state["speed"]
 
     lift = 0.5 * 1.225 * (speed ** 2) * airfoil["cl"]
 
-    st.metric(
-        "Estimated Relative Lift",
-        f"{lift:.2f}"
-    )
-
-    st.write("### Observations")
-
-    st.success(
-        "Higher lift coefficients improve low-speed performance."
-    )
-
-    st.warning(
-        "Higher drag reduces efficiency."
-    )
-
-    st.info(
-        "Choose an airfoil that balances lift and drag."
-    )
-
+    st.metric("Estimated Lift", f"{lift:.2f}")
+    st.metric("Lift Coefficient", airfoil["cl"])
+    st.metric("Drag Coefficient", airfoil["cd"])
+    st.metric("L/D Ratio", airfoil["ld"])
 # ----------------------------------------------------
 # AIRFOILS PAGE
 # ----------------------------------------------------
