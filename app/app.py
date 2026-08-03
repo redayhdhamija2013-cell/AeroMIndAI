@@ -2,12 +2,39 @@ from pathlib import Path
 import time
 import math
 import re
+import io
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import matplotlib.pyplot as plt
+from groq import Groq
+
+# ReportLab Imports for PDF Generation
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+# ==========================================================
+# FILE & PATH RESOLUTION
+# ==========================================================
+
+BASE_DIR = Path(__file__).parent
+LOGO_PATH = BASE_DIR / "logo.jpg"
+HAS_LOGO = LOGO_PATH.exists()
+
+# ==========================================================
+# PAGE CONFIG
+# ==========================================================
+
+st.set_page_config(
+    page_title="AeroMind AI",
+    page_icon=str(LOGO_PATH) if HAS_LOGO else "✈️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # ==========================================================
 # LARGE-SCALE AIRFOIL DATABASE GENERATOR (10,000+ Profiles)
@@ -33,52 +60,50 @@ def load_large_airfoil_database():
     missions = ["Surveillance", "Delivery", "Long Endurance", "Racing", "Training", "Heavy Lift"]
     
     # 2. Generate 10,000+ NACA 4-Digit & 5-Digit Series
-    count = 0
-    target_count = 10200
+    target_count = 10500
+    m, p, t, variant = 0, 0, 2, 1
     
-    for m in range(0, 10):         # Max camber 0% to 9%
-        for p in range(0, 10):      # Position of max camber 00% to 90%
-            for t in range(2, 35):  # Thickness 02% to 34%
-                for variant in range(1, 4): # Sub-variants for high resolution parameterization
-                    code = f"NACA {m}{p}{t:02d}-V{variant}" if variant > 1 else f"NACA {m}{p}{t:02d}"
-                    camber = m / 100.0
-                    thickness = (t + (variant * 0.2)) / 100.0
-                    
-                    cl = round(1.0 + camber * 12 + np.random.uniform(-0.05, 0.05), 2)
-                    cd = round(0.005 + (thickness * 0.04) + (camber * 0.012), 4)
-                    ld = round(cl / cd, 1) if cd > 0 else 100.0
-                    stall = int(90 - (camber * 240) + np.random.randint(-4, 4))
-                    
-                    cat = categories[(m + p + variant) % len(categories)]
-                    msn = missions[(p + t + variant) % len(missions)]
-                    
-                    airfoil_list.append({
-                        "name": code,
-                        "category": cat,
-                        "mission": msn,
-                        "cl": cl,
-                        "cd": cd,
-                        "ld": ld,
-                        "stall": max(25, stall),
-                        "description": f"Parameterized profile with {m}% max camber, {p*10}% chord location, and {thickness*100:.1f}% relative thickness."
-                    })
-                    
-                    count += 1
-                    if len(airfoil_list) >= target_count:
-                        break
-                if len(airfoil_list) >= target_count:
-                    break
-            if len(airfoil_list) >= target_count:
-                break
-        if len(airfoil_list) >= target_count:
-            break
-            
+    while len(airfoil_list) < target_count:
+        code = f"NACA {m}{p}{t:02d}-V{variant}" if variant > 1 else f"NACA {m}{p}{t:02d}"
+        camber = m / 100.0
+        thickness = (t + (variant * 0.1)) / 100.0
+        
+        cl = round(1.0 + camber * 12 + np.random.uniform(-0.05, 0.05), 2)
+        cd = round(0.005 + (thickness * 0.04) + (camber * 0.012), 4)
+        ld = round(cl / cd, 1) if cd > 0 else 100.0
+        stall = int(90 - (camber * 240) + np.random.randint(-4, 4))
+        
+        cat = categories[(m + p + variant) % len(categories)]
+        msn = missions[(p + t + variant) % len(missions)]
+        
+        airfoil_list.append({
+            "name": code,
+            "category": cat,
+            "mission": msn,
+            "cl": cl,
+            "cd": cd,
+            "ld": ld,
+            "stall": max(25, stall),
+            "description": f"Parameterized profile with {m}% max camber, {p*10}% chord location, and {thickness*100:.1f}% relative thickness."
+        })
+        
+        variant += 1
+        if variant > 4:
+            variant = 1
+            t += 1
+            if t > 35:
+                t = 2
+                p += 1
+                if p > 9:
+                    p = 0
+                    m = (m + 1) % 10
+
     return airfoil_list
 
 airfoils = load_large_airfoil_database()
 
 def recommend_airfoil(aircraft_type, mission_type):
-    """Selects the best matching airfoil from the 10,000+ item database."""
+    """Selects the best matching airfoil from the database."""
     matches = [a for a in airfoils if a["category"] == aircraft_type and a["mission"] == mission_type]
     if matches:
         return sorted(matches, key=lambda x: x["ld"], reverse=True)[0]
@@ -102,19 +127,8 @@ def performance_chart(cl, cd, ld):
     fig.update_layout(barmode='group', template="plotly_dark", height=400)
     return fig
 
-# ==========================================================
-# PAGE CONFIG & CSS
-# ==========================================================
-
-st.set_page_config(
-    page_title="AeroMind AI",
-    page_icon="✈️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
 def load_css():
-    css_file = Path(__file__).parent / "styles" / "style.css"
+    css_file = BASE_DIR / "styles" / "style.css"
     if css_file.exists():
         with open(css_file, encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -145,75 +159,37 @@ def draw_airfoil():
     return fig
 
 def get_local_ai_response(query):
-    q = query.lower().strip()
+    """Retrieves AI response using the Groq Cloud API with key loaded from st.secrets."""
+    api_key = st.secrets.get("GROQ_API_KEY", "")
     
-    current_airfoil = st.session_state.airfoil['name'] if st.session_state.airfoil else 'NACA 2412'
-    current_aircraft = st.session_state.aircraft if st.session_state.aircraft else 'Drone / UAV'
-    current_mission = st.session_state.mission if st.session_state.mission else 'General Aviation'
-    current_speed = st.session_state.speed if st.session_state.speed else 80
+    if not api_key:
+        return "⚠️ **API Key Missing:** Please add `GROQ_API_KEY` inside `.streamlit/secrets.toml`."
 
-    if "naca 4412" in q or "s1223" in q or "compare" in q:
-        body = f"""
-### 🤖 AI Engineering Analysis: Profile Comparison
+    current_airfoil = st.session_state.airfoil['name'] if st.session_state.get('airfoil') else 'NACA 2412'
+    current_aircraft = st.session_state.aircraft if st.session_state.get('aircraft') else 'Drone'
+    current_mission = st.session_state.mission if st.session_state.get('mission') else 'General Aviation'
 
-* **NACA 4412 (High-Lift GA Profile):** Features a 4% maximum camber. Delivers strong maximum lift ($C_{{L,max}} \\approx 1.6$) while maintaining predictable, gentle stall behavior.
-* **Selig S1223 (Low-Re High-Lift Profile):** Optimized for low Reynolds numbers ($Re < 300,000$). Extreme camber yields $C_{{L,max}} > 2.0$, ideal for heavy-lift cargo drones.
-* **Current Config Fit:** For your active setup (**{current_aircraft}** - **{current_mission}**), **{current_airfoil}** was selected to optimize performance at **{current_speed} km/h**.
-"""
+    system_prompt = f"""
+    You are AeroMind AI, an expert aerospace engineering assistant. 
+    The user is currently designing a {current_aircraft} for {current_mission} missions using the {current_airfoil} airfoil.
+    Provide concise, accurate, and professional aerodynamic engineering answers using clean Markdown formatting.
+    """
 
-    elif "reynolds" in q or "re" in q:
-        body = f"""
-### 🤖 AI Engineering Analysis: Reynolds Number ($Re$) Effect
+    try:
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+        return response.choices[0].message.content
 
-$$\\text{{Re}} = \\frac{{\\rho \\cdot V \\cdot c}}{{\\mu}}$$
-
-* **Low Reynolds Regime ($Re < 500,000$):** Viscous forces dominate. Boundary layer separation easily creates Laminar Separation Bubbles (LSBs), increasing drag. Airfoils require thin or specialized high-camber geometries.
-* **High Reynolds Regime ($Re > 1,000,000$):** Inertial forces dominate. The boundary layer transitions quickly to turbulent flow, resisting detachment and permitting higher angles of attack before stall.
-"""
-
-    elif "endurance" in q or "range" in q or "efficiency" in q:
-        body = f"""
-### 🤖 AI Engineering Analysis: Maximizing Flight Endurance
-
-To maximize time-aloft (endurance) for **{current_aircraft}** on **{current_mission}** missions:
-1. **Optimize $C_L^{{3/2}} / C_D$:** Maximum endurance occurs at the angle of attack that maximizes the ratio $C_L^{{1.5}} / C_D$.
-2. **Profile Selection:** High $L/D$ airfoils with moderate thickness (like {current_airfoil}).
-3. **Aspect Ratio:** Increase wing aspect ratio ($AR = b^2/S$) to minimize induced drag ($C_{{Di}} = C_L^2 / (\\pi e AR)$).
-"""
-
-    elif "stall" in q or "speed" in q:
-        body = f"""
-### 🤖 AI Engineering Analysis: Stall Mechanics
-
-Stall speed is determined by the maximum lift coefficient ($C_{{L,max}}$):
-
-$$V_{{\\text{{stall}}}} = \\sqrt{{\\frac{{2 W}}{{\\rho S C_{{L,\\text{{max}}}}}}}}$$
-
-* **Weight ($W$):** Higher mass directly increases stall speed.
-* **Altitude ($\mu, \\rho$):** Lower air density at higher altitudes increases true stall speed.
-* **Bank Angle:** Turning increases effective load factor ($n$), raising stall speed by $\\sqrt{{n}}$.
-"""
-
-    else:
-        body = f"""
-### 🤖 AI Engineering Analysis
-
-**Analyzed Subject:** *"{query}"*
-
-**Aerodynamic Evaluation:**
-Addressing your question regarding **"{query}"** in the context of your active flight setup (**{current_aircraft}** performing **{current_mission}** at **{current_speed} km/h**):
-
-* **Primary Factors:** Optimal efficiency requires balancing lift generation against boundary layer pressure gradients.
-* **Configuration Context:** Your current recommended profile (**{current_airfoil}**) is configured to maintain steady flight dynamics without premature boundary layer detachment.
-* **Recommendation:** Ensure operating parameters stay within the linear range of the $C_L$ vs. $\\alpha$ angle-of-attack curve for structural stability.
-"""
-
-    disclaimer = """
----
-> 💡 **Notice:** *This is a structural demonstration response. Full real-time conversational AI integration and deep aerodynamic reasoning capabilities will be enabled in upcoming releases of AeroMind AI.*
-"""
-
-    return body + disclaimer
+    except Exception as e:
+        return f"⚠️ **API Request Error:** {str(e)}"
 
 # ==========================================
 # SESSION STATE
@@ -241,17 +217,22 @@ def set_suggested_question(q_text):
 # SIDEBAR
 # ==========================================
 
-st.sidebar.title("✈ AeroMind AI")
+if HAS_LOGO:
+    c1, c2, c3 = st.sidebar.columns([1, 2, 1])
+    with c2:
+        st.image(str(LOGO_PATH), use_container_width=True)
+
+st.sidebar.markdown("<h2 style='text-align: center; margin-top: -10px;'>AeroMind AI</h2>", unsafe_allow_html=True)
 
 page = st.sidebar.radio(
     "Navigation",
     [
-        "🏠 Dashboard",
-        "🛩 Aircraft Designer",
-        "📊 Analysis",
-        "🪶 Airfoil Explorer",
-        "🤖 AI Engineer",
-        "📄 Reports"
+        "Dashboard",
+        "Aircraft Designer",
+        "Analysis",
+        "Airfoil Explorer",
+        "AI Engineer",
+        "Reports"
     ]
 )
 
@@ -265,14 +246,21 @@ st.sidebar.metric("Version", "3.0")
 # DASHBOARD
 # ==========================================
 
-if page == "🏠 Dashboard":
-    st.title("✈ AeroMind AI")
-    st.subheader("AI Powered Aerodynamic Design Platform")
+if page == "Dashboard":
+    col_logo, col_text = st.columns([1, 6])
+    with col_logo:
+        if HAS_LOGO:
+            st.image(str(LOGO_PATH), width=90)
+    with col_text:
+        st.title("AeroMind AI")
+        st.subheader("AI Powered Aerodynamic Design Platform")
+    
     st.divider()
 
+    # System Overview Metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Airfoils", "10,000+")
-    c2.metric("Aircraft", "5")
+    c2.metric("Aircraft Types", "5")
     c3.metric("Design Accuracy", "98%")
     c4.metric("Status", "Online")
 
@@ -284,36 +272,50 @@ if page == "🏠 Dashboard":
         st.markdown("""
         ### Welcome to AeroMind AI
 
-        AeroMind AI is an intelligent aircraft design assistant
-        that helps students and engineers select the best airfoil
-        based on aircraft type and mission profile.
+        AeroMind AI is an intelligent aircraft design assistant engineered to simplify airfoil selection and performance estimation for students, researchers, and aerospace engineers.
 
-        **Features:**
-        - Aircraft Design & AI Selection
-        - Aerodynamic Performance Analysis
-        - Interactive Plots & Airfoil Exploration
-        - Automated Engineering Reports
+        ---
+
+        ### What is an Airfoil?
+        An **airfoil** (or aerofoil) is the cross-sectional shape of an aircraft wing, blade (propeller, rotor, or turbine), or sail. When air passes over an airfoil:
+        * **Lift Generation:** Air travels faster over the upper curved surface than the flat bottom surface, creating a pressure differential (Bernoulli's Principle) that generates upward lift force ($C_L$).
+        * **Drag Penalty:** Moving through air inevitably creates resistance or aerodynamic drag ($C_D$).
+        * **Aerodynamic Efficiency:** Defined by the **Lift-to-Drag Ratio ($L/D$)**, higher efficiency allows aircraft to carry heavier loads, fly faster, or remain airborne longer on less fuel.
+
+        ---
+
+        ### How AeroMind AI Helps You
+        Selecting the correct airfoil manually from thousands of parameterized curves requires running complex computational fluid dynamics (CFD) or searching huge aerodynamic tables. AeroMind AI automates this workflow:
+
+        1. **AI-Driven Profile Matching:** Input your target aircraft (Drone, Glider, Cargo, Fighter Jet) and mission profile (Heavy Lift, Endurance, Speed), and AeroMind searches over **10,000+ airfoils** to identify the optimal geometry.
+        2. **Instant Aerodynamic Calculations:** Calculates expected Lift force ($N$), Drag force ($N$), $L/D$ efficiency ratios, and Reynolds Numbers ($Re$) dynamically.
+        3. **Automated Documentation:** Generates complete engineering reports with downloadable formatted PDFs ready for academic or professional presentation.
+        4. **Interactive AI Engineer Assistant:** Ask technical questions about boundary layer separation, stall dynamics, or profile comparisons in real time.
         """)
 
     with right:
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
             value=98,
-            title={"text": "AI Confidence"},
+            title={"text": "AI Engine Confidence"},
             gauge={"axis": {"range": [0, 100]}}
         ))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
-    st.subheader("Available Airfoils Database (Preview)")
-    st.dataframe(pd.DataFrame(airfoils).head(200), use_container_width=True)
+        st.info("""
+        **Quick Start Guide:**
+        1. Navigate to **Aircraft Designer** in the sidebar.
+        2. Enter your payload, flight velocity, and mission requirements.
+        3. Click **Generate AI Design** to receive your custom profile.
+        4. Head to **Reports** to download your PDF deliverable.
+        """)
 
 # ==========================================
 # AIRCRAFT DESIGNER
 # ==========================================
 
-elif page == "🛩 Aircraft Designer":
-    st.title("🛩 Aircraft Designer")
+elif page == "Aircraft Designer":
+    st.title("Aircraft Designer")
     st.write("Fill in the aircraft specifications below.")
 
     left, right = st.columns([2, 1])
@@ -334,7 +336,7 @@ elif page == "🛩 Aircraft Designer":
         altitude = st.number_input("Altitude (m)", min_value=0, value=500)
         wingspan = st.number_input("Wing Span (m)", min_value=0.1, value=2.0)
 
-        generate = st.button("🚀 Generate AI Design", use_container_width=True)
+        generate = st.button("Generate AI Design", use_container_width=True)
 
     with right:
         st.subheader("Current Configuration")
@@ -352,11 +354,11 @@ elif page == "🛩 Aircraft Designer":
         progress = st.progress(0)
 
         steps = [
-            ("🔍 Reading aircraft specifications...", 15),
-            ("🧠 AI searching 10,000+ airfoils for optimal profile...", 40),
-            ("📊 Running aerodynamic calculations...", 65),
-            ("⚙ Optimizing performance...", 90),
-            ("✅ Finalizing design...", 100)
+            ("Reading aircraft specifications...", 15),
+            ("AI searching 10,000+ airfoils for optimal profile...", 40),
+            ("Running aerodynamic calculations...", 65),
+            ("Optimizing performance...", 90),
+            ("Finalizing design...", 100)
         ]
 
         for msg, pct in steps:
@@ -374,10 +376,10 @@ elif page == "🛩 Aircraft Designer":
         st.session_state.mission = mission
         st.session_state.speed = speed
 
-        st.success("✅ AI Design Generated Successfully!")
+        st.success("AI Design Generated Successfully!")
         st.divider()
 
-        st.subheader("✈ Recommended Airfoil")
+        st.subheader("Recommended Airfoil")
         st.markdown(f"# {airfoil['name']}")
 
         c1, c2, c3, c4 = st.columns(4)
@@ -389,7 +391,7 @@ elif page == "🛩 Aircraft Designer":
         st.info(airfoil["description"])
         st.divider()
 
-        st.subheader("🤖 AI Confidence")
+        st.subheader("AI Confidence")
         score = np.random.randint(94, 100)
         gauge = go.Figure(go.Indicator(
             mode="gauge+number",
@@ -408,7 +410,7 @@ elif page == "🛩 Aircraft Designer":
         st.plotly_chart(gauge, use_container_width=True)
 
         st.divider()
-        st.subheader("📈 Performance Scores")
+        st.subheader("Performance Scores")
 
         p1, p2, p3, p4 = st.columns(4)
         lift_score = round(min(10.0, airfoil["cl"] * 5.5), 1)
@@ -422,17 +424,17 @@ elif page == "🛩 Aircraft Designer":
         p4.metric("Stability", f"{stability}/10")
 
         st.divider()
-        st.subheader("🪶 Airfoil Shape")
+        st.subheader("Airfoil Shape")
         fig = draw_airfoil()
         st.pyplot(fig)
 
         st.divider()
-        st.subheader("📊 Performance Analysis")
+        st.subheader("Performance Analysis")
         chart = performance_chart(airfoil["cl"], airfoil["cd"], airfoil["ld"])
         st.plotly_chart(chart, use_container_width=True)
 
         st.divider()
-        st.subheader("🧮 Aerodynamic Calculations")
+        st.subheader("Aerodynamic Calculations")
 
         lift = calculate_lift(speed, airfoil["cl"])
         drag = lift * airfoil["cd"]
@@ -444,7 +446,7 @@ elif page == "🛩 Aircraft Designer":
         a3.metric("Reynolds Number", f"{reynolds:,.0f}")
 
         st.divider()
-        st.subheader("💡 AI Engineering Recommendation")
+        st.subheader("AI Engineering Recommendation")
         st.success(f"""
         For a **{aircraft}** performing **{mission}** missions, the **{airfoil['name']}** provides an optimal aerodynamic balance between high lift, low drag, and flight stability.
         """)
@@ -453,8 +455,8 @@ elif page == "🛩 Aircraft Designer":
 # ANALYSIS PAGE
 # ==========================================
 
-elif page == "📊 Analysis":
-    st.title("📊 Aerodynamic Analysis")
+elif page == "Analysis":
+    st.title("Aerodynamic Analysis")
 
     if st.session_state.airfoil is None:
         st.warning("Generate a design in 'Aircraft Designer' first.")
@@ -498,8 +500,8 @@ elif page == "📊 Analysis":
 # AIRFOIL EXPLORER
 # ==========================================
 
-elif page == "🪶 Airfoil Explorer":
-    st.title("🪶 Airfoil Explorer")
+elif page == "Airfoil Explorer":
+    st.title("Airfoil Explorer")
 
     df = pd.DataFrame(airfoils)
     
@@ -516,7 +518,7 @@ elif page == "🪶 Airfoil Explorer":
 
     st.write("Displaying database of **10,000+** airfoils:")
     
-    search_query = st.text_input("🔍 Search Airfoil Database (e.g. NACA 4412, S1223, NACA 2310):", "")
+    search_query = st.text_input("Search Airfoil Database (e.g. NACA 4412, S1223, NACA 2310):", "")
     if search_query:
         filtered_df = df[df["Airfoil"].str.contains(search_query, case=False, na=False)]
     else:
@@ -550,8 +552,8 @@ elif page == "🪶 Airfoil Explorer":
 # AI ENGINEER
 # ==========================================
 
-elif page == "🤖 AI Engineer":
-    st.title("🤖 AI Engineer")
+elif page == "AI Engineer":
+    st.title("AI Engineer")
     st.write("Ask AeroMind AI an engineering question.")
 
     question = st.text_area(
@@ -566,7 +568,6 @@ elif page == "🤖 AI Engineer":
             st.warning("Please enter a question.")
         else:
             with st.spinner("Analyzing aerodynamics..."):
-                time.sleep(0.6)
                 answer = get_local_ai_response(question)
                 
             st.markdown(answer)
@@ -577,24 +578,24 @@ elif page == "🤖 AI Engineer":
     col_a, col_b = st.columns(2)
     with col_a:
         st.button(
-            "❓ Which airfoil is best for endurance?", 
+            "Which airfoil is best for endurance?", 
             on_click=set_suggested_question, 
             args=("Which airfoil is best for endurance?",)
         )
         st.button(
-            "❓ How does Reynolds Number affect lift?", 
+            "How does Reynolds Number affect lift?", 
             on_click=set_suggested_question, 
             args=("How does Reynolds Number affect lift?",)
         )
             
     with col_b:
         st.button(
-            "❓ What causes stall speed to shift?", 
+            "What causes stall speed to shift?", 
             on_click=set_suggested_question, 
             args=("What causes stall speed to shift?",)
         )
         st.button(
-            "❓ Compare NACA 4412 and S1223", 
+            "Compare NACA 4412 and S1223", 
             on_click=set_suggested_question, 
             args=("Compare NACA 4412 and S1223",)
         )
@@ -603,11 +604,11 @@ elif page == "🤖 AI Engineer":
 # REPORTS PAGE
 # ==========================================
 
-elif page == "📄 Reports":
-    st.title("📄 Engineering Report")
+elif page == "Reports":
+    st.title("Engineering Report")
 
     if st.session_state.airfoil is None:
-        st.warning("Generate an aircraft design first.")
+        st.warning("Generate an aircraft design first in 'Aircraft Designer'.")
         st.stop()
 
     airfoil = st.session_state.airfoil
@@ -617,6 +618,7 @@ elif page == "📄 Reports":
 
     lift = calculate_lift(speed, airfoil["cl"])
     drag = lift * airfoil["cd"]
+    reynolds = (1.225 * (speed / 3.6) * 1.5) / 1.81e-5
 
     st.subheader("Aircraft Summary")
 
@@ -633,47 +635,135 @@ elif page == "📄 Reports":
 
     st.divider()
 
-    report = f"""===============================
-        AEROMIND AI REPORT
-===============================
+    def generate_pdf_report():
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36
+        )
+        
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'ReportTitle',
+            parent=styles['Heading1'],
+            fontSize=20,
+            leading=24,
+            textColor=colors.HexColor('#1E3A8A'),
+            spaceAfter=6
+        )
+        subtitle_style = ParagraphStyle(
+            'ReportSubTitle',
+            parent=styles['Normal'],
+            fontSize=11,
+            leading=14,
+            textColor=colors.HexColor('#4B5563'),
+            spaceAfter=15
+        )
+        section_heading = ParagraphStyle(
+            'SectionHeading',
+            parent=styles['Heading2'],
+            fontSize=13,
+            leading=17,
+            textColor=colors.HexColor('#1F2937'),
+            spaceBefore=10,
+            spaceAfter=6
+        )
+        body_style = ParagraphStyle(
+            'Body',
+            parent=styles['Normal'],
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor('#374151')
+        )
 
-Aircraft Type : {aircraft}
-Mission       : {mission}
-Cruise Speed  : {speed} km/h
+        elements = []
 
---------------------------------
-Recommended Airfoil: {airfoil["name"]}
-Lift Coefficient   : {airfoil["cl"]}
-Drag Coefficient   : {airfoil["cd"]}
-Lift / Drag Ratio  : {airfoil["ld"]}
-Estimated Stall    : {airfoil["stall"]} km/h
+        # Optional Logo in PDF Header
+        if HAS_LOGO:
+            img = RLImage(str(LOGO_PATH), width=45, height=45)
+            elements.append(img)
+            elements.append(Spacer(1, 6))
 
---------------------------------
-Calculated Performance:
-Estimated Lift : {lift:.2f} N
-Estimated Drag : {drag:.2f} N
+        # Document Header
+        elements.append(Paragraph("AeroMind AI — Engineering Analysis Report", title_style))
+        elements.append(Paragraph(f"Generated Aerodynamic Evaluation for <b>{aircraft}</b> ({mission})", subtitle_style))
+        elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#2563EB'), spaceAfter=15))
 
---------------------------------
-Description:
-{airfoil["description"]}
-"""
+        # Table 1: Flight Specifications
+        elements.append(Paragraph("1. Primary Parameters", section_heading))
+        spec_data = [
+            [Paragraph("<b>Parameter</b>", body_style), Paragraph("<b>Value</b>", body_style)],
+            ["Aircraft Category", aircraft],
+            ["Mission Profile", mission],
+            ["Cruise Velocity", f"{speed} km/h ({round(speed/3.6, 2)} m/s)"],
+            ["Target Reynolds Number", f"{reynolds:,.0f}"]
+        ]
+        t1 = Table(spec_data, colWidths=[200, 300])
+        t1.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F3F4F6')),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+            ('PADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(t1)
+        elements.append(Spacer(1, 10))
+
+        # Table 2: Airfoil Aero Characteristics
+        elements.append(Paragraph("2. Airfoil Performance Characteristics", section_heading))
+        airfoil_data = [
+            [Paragraph("<b>Metric</b>", body_style), Paragraph("<b>Specification</b>", body_style)],
+            ["Selected Airfoil Profile", airfoil["name"]],
+            ["Lift Coefficient (Cl)", str(airfoil["cl"])],
+            ["Drag Coefficient (Cd)", str(airfoil["cd"])],
+            ["Lift-to-Drag Ratio (L/D)", str(airfoil["ld"])],
+            ["Estimated Stall Speed", f"{airfoil['stall']} km/h"],
+            ["Calculated Lift Force", f"{lift:.2f} N"],
+            ["Calculated Drag Force", f"{drag:.2f} N"]
+        ]
+        t2 = Table(airfoil_data, colWidths=[200, 300])
+        t2.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F3F4F6')),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+            ('PADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(t2)
+        elements.append(Spacer(1, 10))
+
+        # AI Recommendations
+        elements.append(Paragraph("3. AI Engineering Summary", section_heading))
+        elements.append(Paragraph(
+            f"The <b>{airfoil['name']}</b> was selected by AeroMind AI based on structural lift requirements "
+            f"and target mission efficiency. Description: {airfoil['description']}", 
+            body_style
+        ))
+        elements.append(Spacer(1, 15))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#9CA3AF'), spaceAfter=10))
+        elements.append(Paragraph("<i>AeroMind AI v3.0 — Automated Engineering Deliverable</i>", subtitle_style))
+
+        doc.build(elements)
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        return pdf_data
+
+    pdf_bytes = generate_pdf_report()
 
     st.download_button(
-        "📥 Download Report",
-        report,
-        file_name="AeroMind_Report.txt",
-        mime="text/plain",
+        label="Download PDF Report",
+        data=pdf_bytes,
+        file_name=f"AeroMind_Report_{airfoil['name'].replace(' ', '_')}.pdf",
+        mime="application/pdf",
         use_container_width=True
     )
-
-    st.text_area("Report Preview", report, height=400)
 
 # ==========================================
 # FOOTER
 # ==========================================
 
 st.sidebar.markdown("---")
-st.sidebar.caption("✈ AeroMind AI v3.0")
+st.sidebar.caption("AeroMind AI v3.0")
 st.sidebar.caption("Developed with Streamlit")
 
 st.markdown("---")
