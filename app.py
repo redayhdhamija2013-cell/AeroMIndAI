@@ -1,3 +1,5 @@
+from services.calculations import calculate_lift, performance_chart
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -21,31 +23,14 @@ st.set_page_config(
 # ==========================================================
 # CUSTOM CSS
 # ==========================================================
+def load_css():
+    css_file = Path(__file__).parent / "styles" / "style.css"
 
-st.markdown("""
-<style>
+    with open(css_file, encoding="utf-8") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-.main{
-    background-color:#0f172a;
-}
+load_css()
 
-.block-container{
-    padding-top:1rem;
-}
-
-.metric-card{
-    background:#1e293b;
-    border-radius:12px;
-    padding:15px;
-    border:1px solid #334155;
-}
-
-.sidebar .sidebar-content{
-    background:#111827;
-}
-
-</style>
-""", unsafe_allow_html=True)
 
 # ==========================================================
 # AIRFOIL DATABASE
@@ -161,34 +146,6 @@ def draw_airfoil():
     return fig
 
 
-def performance_chart(cl,cd,ld):
-
-    fig=go.Figure()
-
-    fig.add_trace(go.Bar(
-        x=["Lift","Drag","L/D"],
-        y=[cl,cd,ld],
-        text=[cl,cd,ld],
-        textposition="outside"
-    ))
-
-    fig.update_layout(
-        template="plotly_dark",
-        height=450,
-        title="Performance Analysis"
-    )
-
-    return fig
-
-
-def calculate_lift(speed,cl):
-
-    rho=1.225
-    area=1
-
-    v=speed/3.6
-
-    return 0.5*rho*(v**2)*area*cl
 
 
 # ==========================================================
