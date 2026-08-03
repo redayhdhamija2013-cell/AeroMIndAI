@@ -2,29 +2,43 @@ import pandas as pd
 
 airfoils = pd.read_csv("data/airfoils.csv")
 
+# Normalize column names
+airfoils.columns = [
+    "name",
+    "category",
+    "mission",
+    "cl",
+    "cd",
+    "ld",
+    "stall",
+    "description",
+]
+
 
 def recommend_airfoil(aircraft, mission):
-    """
-    Returns the best matching airfoil.
-    """
 
-    # Aircraft + Mission matching
+    aircraft_map = {
+        "Cargo Aircraft": "Cargo",
+        "Fighter Jet": "Fighter",
+        "Drone": "Drone",
+        "Glider": "Glider",
+    }
 
-    if aircraft == "Drone":
+    aircraft = aircraft_map.get(aircraft, aircraft)
 
-        if mission == "Surveillance":
-            return airfoils.iloc[0]
+    match = airfoils[
+        (airfoils["category"] == aircraft) &
+        (airfoils["mission"] == mission)
+    ]
 
-        elif mission == "Delivery":
-            return airfoils.iloc[5]
+    if not match.empty:
+        return match.iloc[0]
 
-    if aircraft == "Cargo Aircraft":
-        return airfoils.iloc[2]
+    match = airfoils[
+        airfoils["category"] == aircraft
+    ]
 
-    if aircraft == "Glider":
-        return airfoils.iloc[3]
-
-    if aircraft == "Fighter Jet":
-        return airfoils.iloc[4]
+    if not match.empty:
+        return match.iloc[0]
 
     return airfoils.iloc[1]
