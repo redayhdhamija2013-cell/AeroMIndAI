@@ -177,14 +177,18 @@ def get_local_ai_response(query):
 
     try:
         client = Groq(api_key=api_key)
+        # llama-3.3-70b-versatile was retired by Groq on 2026-08-16.
+        # Model is configurable via GROQ_MODEL in secrets.toml.
+        model_name = st.secrets.get("GROQ_MODEL", "openai/gpt-oss-120b")
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query},
             ],
             temperature=0.3,
-            max_tokens=1000,
+            max_tokens=2000,  # headroom for reasoning tokens
+            extra_body={"reasoning_effort": "low"},
         )
         return response.choices[0].message.content
 
